@@ -1,14 +1,24 @@
+import os
+import json
 from playwright.sync_api import sync_playwright
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# 1. Configurar o acesso ao Google Sheets (Mantenha igual ao anterior)
+# 1. Configurar o acesso ao Google Sheets usando Variável de Ambiente
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name('sixth-vine-442418-n1-b967d56ab5ec.json', scope)
-client = gspread.authorize(creds)
-planilha = client.open("Monitor_Precos_PC")
 
+# Pega o texto do cofre do GitHub e transforma em um dicionário
+credenciais_texto = os.environ.get("GOOGLE_CREDENTIALS")
+if not credenciais_texto:
+    raise ValueError("Credenciais não encontradas. Verifique os Secrets do GitHub.")
+
+creds_dict = json.loads(credenciais_texto)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+client = gspread.authorize(creds)
+
+# Abre a planilha inteira
+planilha = client.open("Monitor_Precos_PC")
 # 2. Conectar nas abas específicas
 aba_links = planilha.worksheet("Links")      # Aba de onde vamos LER
 aba_historico = planilha.worksheet("Historico") # Aba onde vamos ESCREVER
