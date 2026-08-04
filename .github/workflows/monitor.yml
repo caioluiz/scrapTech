@@ -1,0 +1,35 @@
+name: Monitor de Preços PC
+
+on:
+  schedule:
+    # Roda todos os dias às 13:00 UTC (que equivale às 10:00 da manhã no horário de Brasília)
+    # O formato é 'Minuto Hora * * *'
+    - cron: '0 13 * * *'
+  
+  # Esse comando permite que você crie um botão para rodar manualmente quando quiser testar
+  workflow_dispatch: 
+
+jobs:
+  rodar_bot:
+    runs-on: ubuntu-latest # O sistema operacional do servidor
+
+    steps:
+      - name: Copiar os arquivos do repositório
+        uses: actions/checkout@v4
+
+      - name: Preparar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalar as bibliotecas
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright gspread oauth2client
+          playwright install chromium
+
+      - name: Executar o Monitor
+        env:
+          # Puxa o conteúdo do cofre que criamos no Passo 2 e joga pro Python
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python scrap.py
