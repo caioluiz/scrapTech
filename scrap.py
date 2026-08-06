@@ -1,45 +1,84 @@
 import os
 import json
-from playwright.sync_api import sync_playwright
+import re
 import gspread
+from playwright.sync_api import sync_playwright
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+from urllib.parse import urlparse
 
-# 1. Configurar o acesso ao Google Sheets usando Variável de Ambiente
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
-# Pega o texto do cofre do GitHub e transforma em um dicionário
+# O Python tenta pegar a senha do cofre do GitHub primeiro
 credenciais_texto = os.environ.get("GOOGLE_CREDENTIALS")
-if not credenciais_texto:
-    raise ValueError("Credenciais não encontradas. Verifique os Secrets do GitHub.")
 
-creds_dict = json.loads(credenciais_texto)
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+if credenciais_texto:
+    # Cenário 1: Está rodando na nuvem (GitHub Actions)
+    print(" Rodando na nuvem: Usando credenciais do GitHub Secrets...")
+    creds_dict = json.loads(credenciais_texto)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+else:
+    # Cenário 2: Está rodando no seu computador (VSCode)
+    print(" Rodando localmente: Usando arquivo credenciais.json...")
+    # Ele volta a ler o arquivo físico que está na sua pasta
+    creds = ServiceAccountCredentials.from_json_keyfile_name('credenciais.json', scope)
+
+# Conecta no Google
 client = gspread.authorize(creds)
-
-# Abre a planilha inteira
 planilha = client.open("Monitor_Precos_PC")
-# 2. Conectar nas abas específicas
-aba_links = planilha.worksheet("Links")      # Aba de onde vamos LER
-aba_historico = planilha.worksheet("Historico") # Aba onde vamos ESCREVER
+aba_links = planilha.worksheet("Links")
+aba_historico = planilha.worksheet("Historico")
+
+# Mapeamento de domínios para seus respectivos seletores de preço
+SELETORES_POR_LOJA = {
+    'kabum.com.br': 'h4:has-text("R$")',
+    'terabyteshop.com.br': '#valVista', # ID comum de preço à vista na Terabyte
+    'amazon.com.br': '.a-price-whole',  # Classe do valor principal na Amazon
+    #'mercadolivre.com.br': '.andes-money-amount__fraction', # porradeira, segurança muito forte, não usando por enquanto
+    #'pichau.com.br': 'div:has-text("à vista") + div' # por enquanto não vou usar(ter que mudar função limpar_preco)
+}
+
+# Se a URL não for de nenhuma loja acima, ele tenta esse seletor padrão
+SELETOR_PADRAO = 'h4:has-text("R$")'
 
 # O Python vai ler a planilha e criar a lista automaticamente!
 lista_de_pecas = aba_links.get_all_records()
 
 def limpar_preco(preco_texto):
     try:
-        # Remove o 'R$' e espaços em branco
-        texto_limpo = preco_texto.replace("R$", "").strip()
-        # Remove o ponto dos milhares (ex: 1.500,00 -> 1500,00)
-        texto_limpo = texto_limpo.replace(".", "")
-        # Troca a vírgula dos centavos por ponto (ex: 1500,00 -> 1500.00)
-        texto_limpo = texto_limpo.replace(",", ".")
+        # 1. O Regex arranca TUDO que não for número, ponto ou vírgula.
+        # Se a Amazon mandar "R$ 1.500 \n , ", isso vira "1.500,"
+        texto_limpo = re.sub(r'[^\d.,]', '', preco_texto)
         
-        # Converte para número decimal (float)
+        # Se a string ficar vazia, retorna 0
+        if not texto_limpo:
+            return 0.0
+            
+        # 2. Se sobrar uma vírgula ou ponto solto no final (O bug da Amazon)
+        # Ele arranca esse último caractere. "1.500," vira "1.500"
+        if texto_limpo.endswith(',') or texto_limpo.endswith('.'):
+            texto_limpo = texto_limpo[:-1]
+        
+        # 3. Faz a limpeza matemática padrão (Brasil para EUA)
+        texto_limpo = texto_limpo.replace(".", "") # Tira ponto de milhar
+        texto_limpo = texto_limpo.replace(",", ".") # Troca vírgula por ponto decimal
+        
+        # Converte para Float matemático
         return float(texto_limpo)
-    except ValueError:
-        # Se der erro (ex: site mostrar "Indisponível"), retorna 0 ou vazio
+        
+    except Exception as e:
+        print(f"Erro ao limpar o preço '{preco_texto}': {e}")
         return 0.0
+    
+def descobrir_seletor(url):
+    # Transforma "https://www.amazon.com.br/produto-x" em "www.amazon.com.br"
+    dominio = urlparse(url).netloc 
+    
+    for loja, seletor in SELETORES_POR_LOJA.items():
+        if loja in dominio:
+            return seletor
+            
+    return SELETOR_PADRAO
 
 def checar_multiplos_precos(pecas):
     if not pecas:
@@ -64,31 +103,41 @@ def checar_multiplos_precos(pecas):
             nome = peca.get('Nome')
             url = peca.get('URL')
             
-            # Se a linha estiver em branco na planilha, o script pula
             if not url or not nome:
                 continue
                 
-            print(f"Buscando preço de: {nome}...")
+            print(f"Buscando: {nome}...")
+            
+            # NOVO: Descobre qual seletor usar baseado na URL
+            seletor_atual = descobrir_seletor(url)
+            print(f"Usando seletor: {seletor_atual}")
             
             try:
                 page.goto(url, wait_until="domcontentloaded")
+                
                 try:
-                    # OTIMIZAÇÃO 2: Espera Inteligente. 
-                    # Aguarda até 5 segundos pelo preço. Mas se o preço carregar em 0.2s, ele avança imediatamente!
-                    page.wait_for_selector('h4:has-text("R$")', timeout=5000)
+                    page.wait_for_selector(seletor_atual, timeout=5000)
+                    elemento_preco = page.locator(seletor_atual).first
                     
-                    elemento_preco = page.locator('h4:has-text("R$")').first
                     preco_texto = elemento_preco.inner_text().strip()
                     preco_numero = limpar_preco(preco_texto)
                     
                     data_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    
-                    # Guarda o dado na lista em vez de enviar pro Google na mesma hora
                     dados_para_salvar.append([data_hora, nome, preco_numero])
                     print(f"✅ R$ {preco_numero}")
                     
                 except Exception:
-                    print(f"❌ Preço não encontrado (Tempo limite excedido).")
+                    print(f"❌ Preço não encontrado. Capturando a tela...")
+                    
+                    # 1. Limpa o nome da peça para usar como nome de arquivo no Windows
+                    # Remove caracteres especiais que o Windows não aceita em nomes de arquivos
+                   # nome_seguro = "".join(c for c in nome if c.isalnum() or c in " ").replace(" ", "_")
+                   # nome_arquivo = f"erro_{nome_seguro}.png"
+                    
+                    # 2. Tira a foto da página inteira e salva na mesma pasta do script
+                  #  page.screenshot(path=nome_arquivo, full_page=True)
+                    
+                  #  print(f"📸 Imagem salva: {nome_arquivo}. Abra para investigar!")
                     
             except Exception as e:
                 print(f"⚠️ Erro ao carregar a página: {e}")
