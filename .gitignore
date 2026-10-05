@@ -34,3 +34,6 @@ Thumbs.db
 # Project-specific sensitive files
 credenciais.json
 rodar_bot.bat
+scrapbkp.py
+scrap_db.py
+migrar_sheets.py

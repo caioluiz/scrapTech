@@ -32,4 +32,5 @@ jobs:
         env:
           # Puxa o conteúdo do cofre que criamos no Passo 2 e joga pro Python
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python scrap.py
